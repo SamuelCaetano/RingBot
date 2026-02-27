@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>RingBot 3D Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d0d1a;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #e0e0e0;
+    overflow: hidden;
+  }
+  #info-bar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    background: rgba(10, 10, 20, 0.85);
+    backdrop-filter: blur(12px);
+    padding: 10px 24px;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255, 215, 0, 0.12);
+  }
+  #info-bar h1 { font-size: 15px; font-weight: 600; color: #ffd700; }
+  #info-bar .meta { font-size: 12px; color: #999; }
+  #canvas-container { width: 100vw; height: 100vh; }
+  #controls {
+    position: fixed; bottom: 16px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(10, 10, 20, 0.82);
+    backdrop-filter: blur(12px);
+    padding: 8px 20px; border-radius: 24px;
+    font-size: 11px; color: #777;
+    border: 1px solid rgba(255, 215, 0, 0.08);
+  }
+  #loading {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 14px; color: #ffd700; z-index: 200;
+  }
+</style>
+</head>
+<body>
+
+<div id="info-bar">
+  <h1>RingBot 3D Viewer</h1>
+  <span class="meta" id="model-info">Loading...</span>
+</div>
+<div id="loading">Loading model...</div>
+<div id="canvas-container"></div>
+<div id="controls">
+  Left-click drag: rotate &nbsp;|&nbsp; Scroll: zoom &nbsp;|&nbsp; Right-click drag: pan
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x12121e);
+
+const camera = new THREE.PerspectiveCamera(
+  40, window.innerWidth / window.innerHeight, 0.1, 500
+);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.6;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+// Build an environment map from a lit scene (no external import needed)
+function buildEnvMap() {
+  const envScene = new THREE.Scene();
+  envScene.background = new THREE.Color(0x888899);
+
+  const light1 = new THREE.DirectionalLight(0xffffff, 3);
+  light1.position.set(1, 1, 1);
+  envScene.add(light1);
+  const light2 = new THREE.DirectionalLight(0xffeedd, 2);
+  light2.position.set(-1, 0.5, -1);
+  envScene.add(light2);
+  const light3 = new THREE.DirectionalLight(0xddeeff, 1.5);
+  light3.position.set(0, -1, 0.5);
+  envScene.add(light3);
+
+  // Simple room-like geometry for reflections
+  const roomGeo = new THREE.BoxGeometry(20, 20, 20);
+  const roomMat = new THREE.MeshStandardMaterial({
+    color: 0x999999, side: THREE.BackSide, metalness: 0.1, roughness: 0.8
+  });
+  envScene.add(new THREE.Mesh(roomGeo, roomMat));
+
+  // Bright panels for specular highlights
+  const panelGeo = new THREE.PlaneGeometry(6, 6);
+  const brightMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2.0
+  });
+  const panel1 = new THREE.Mesh(panelGeo, brightMat);
+  panel1.position.set(0, 8, 0);
+  panel1.rotation.x = Math.PI / 2;
+  envScene.add(panel1);
+  const panel2 = new THREE.Mesh(panelGeo, brightMat);
+  panel2.position.set(5, 3, 5);
+  panel2.lookAt(0, 0, 0);
+  envScene.add(panel2);
+  const panel3 = new THREE.Mesh(panelGeo.clone(), brightMat);
+  panel3.position.set(-6, 2, -3);
+  panel3.lookAt(0, 0, 0);
+  envScene.add(panel3);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envMap = pmrem.fromScene(envScene, 0.04).texture;
+  pmrem.dispose();
+  return envMap;
+}
+
+const envMap = buildEnvMap();
+scene.environment = envMap;
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 8;
+controls.maxDistance = 80;
+controls.target.set(0, 0, 0);
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.0;
+
+// Key light (warm, from above-right)
+const keyLight = new THREE.DirectionalLight(0xfff5e0, 3.0);
+keyLight.position.set(8, 15, 10);
+scene.add(keyLight);
+
+// Fill light (cool, from the left)
+const fillLight = new THREE.DirectionalLight(0xc8d8ff, 1.2);
+fillLight.position.set(-12, 6, -4);
+scene.add(fillLight);
+
+// Rim light (warm, from behind-below for edge highlights)
+const rimLight = new THREE.DirectionalLight(0xffeebb, 2.0);
+rimLight.position.set(-2, -4, -14);
+scene.add(rimLight);
+
+// Overhead spot for sparkle
+const topLight = new THREE.PointLight(0xffffff, 2.0, 50, 1.5);
+topLight.position.set(0, 22, 0);
+scene.add(topLight);
+
+// Two accent point lights for gem sparkle
+const sparkle1 = new THREE.PointLight(0xffffff, 1.0, 30, 2);
+sparkle1.position.set(6, 10, 8);
+scene.add(sparkle1);
+const sparkle2 = new THREE.PointLight(0xfff0dd, 0.8, 30, 2);
+sparkle2.position.set(-5, 8, -6);
+scene.add(sparkle2);
+
+// Hemisphere for natural ambient
+const hemiLight = new THREE.HemisphereLight(0xddeeff, 0x080810, 0.6);
+scene.add(hemiLight);
+
+// Subtle ground disc
+const groundGeo = new THREE.CircleGeometry(35, 64);
+const groundMat = new THREE.MeshStandardMaterial({
+  color: 0x111122, metalness: 0.2, roughness: 0.9,
+});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -1;
+scene.add(ground);
+
+// Materials
+const metalMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xffd700,
+  metalness: 1.0,
+  roughness: 0.12,
+  clearcoat: 0.3,
+  clearcoatRoughness: 0.08,
+  reflectivity: 1.0,
+  envMapIntensity: 1.8,
+});
+
+const stoneMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.0,
+  roughness: 0.0,
+  transmission: 0.95,
+  thickness: 3.0,
+  ior: 2.42,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.0,
+  specularIntensity: 1.0,
+  envMapIntensity: 2.5,
+});
+
+const accentStoneMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0x00aa44,
+  metalness: 0.0,
+  roughness: 0.0,
+  transmission: 0.88,
+  thickness: 2.0,
+  ior: 1.58,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.0,
+  specularIntensity: 1.0,
+  envMapIntensity: 2.5,
+});
+
+const loader = new STLLoader();
+const stlFiles = /*STL_FILES_JSON*/[];
+const modelInfo = document.getElementById('model-info');
+const loadingEl = document.getElementById('loading');
+
+console.log('STL files to load:', stlFiles);
+
+const modelGroup = new THREE.Group();
+scene.add(modelGroup);
+
+let loaded = 0;
+const total = stlFiles.length;
+
+if (total === 0) {
+  loadingEl.textContent = 'No STL files found.';
+}
+
+stlFiles.forEach((file) => {
+  console.log('Loading:', file.url);
+  loader.load(
+    file.url,
+    (geometry) => {
+      console.log('Loaded:', file.name, 'vertices:', geometry.attributes.position.count);
+      geometry.computeVertexNormals();
+
+      let mat = metalMaterial;
+      if (file.name.includes('stone_0')) {
+        mat = stoneMaterial;
+      } else if (file.name.includes('stone_')) {
+        mat = accentStoneMaterial;
+      }
+      // deco_* files use the metal material (default)
+
+      const mesh = new THREE.Mesh(geometry, mat);
+      modelGroup.add(mesh);
+
+      loaded++;
+      if (loaded === total) {
+        loadingEl.style.display = 'none';
+        modelInfo.textContent = total + ' component(s) loaded';
+
+        const box = new THREE.Box3().setFromObject(modelGroup);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+
+        ground.position.y = box.min.y - 0.3;
+        controls.target.copy(center);
+
+        // Camera at an elevated angle to see the ring band + setting
+        camera.position.set(
+          center.x + maxDim * 0.6,
+          center.y + maxDim * 1.0,
+          center.z + maxDim * 1.2
+        );
+        camera.lookAt(center);
+        controls.update();
+      }
+    },
+    (xhr) => {
+      if (xhr.total) {
+        const pct = Math.round(xhr.loaded / xhr.total * 100);
+        loadingEl.textContent = 'Loading ' + file.name + '... ' + pct + '%';
+      }
+    },
+    (err) => {
+      console.error('Error loading', file.url, err);
+      loadingEl.textContent = 'Error loading ' + file.name;
+      loaded++;
+      if (loaded === total && loadingEl.style.display !== 'none') {
+        modelInfo.textContent = 'Some files failed to load';
+      }
+    }
+  );
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
